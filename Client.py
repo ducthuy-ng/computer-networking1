@@ -1,5 +1,6 @@
+from msilib.schema import SelfReg
 import tkinter as tk
-
+import logging
 from enum import Enum
 
 
@@ -21,7 +22,15 @@ class Client:
         self.server_port = server_port
         self.rtp_port = rtp_port
         self.file_name = file_name
-
+        self.rtsp_seq = 0
+        self.session_id=0
+        ## test case:
+        """
+        self.file_name="movie.Mjpeg"
+        self.rtp_port="2500"
+        self.session_id=123456
+        """
+        ##
         self.resource_holder = ResourceHolder
 
         self.current_state: State = State.INIT
@@ -30,38 +39,45 @@ class Client:
 
     def setup_video(self, event=None):
         if self.current_state != State.INIT:
-            print("Video has already been setup")
+            logging.error("Video has already been setup")
         else:
-            print("Setting video up")
-
+            self.rtsp_seq=1
+            logging.info("\n"+"C: SETUP "+self.file_name+" RTSP/1.0"+"\n"+"C: CSeq: "+str(self.rtsp_seq)+"\n"+"C: Transport: RTP/UDP; client_port= "+self.rtp_port)
+            
             self.current_state = State.READY
 
     def play_video(self, event=None):
         if self.current_state == State.PLAYING:
-            print("The video is already playing")
+            logging.error("The video is already playing")
         elif self.current_state == State.INIT:
-            print("No video to play, press setup to choose one")
+            logging.error("No video to play, press setup to choose one")
         else:
-            self.logger.debug("Hello")
+            self.rtsp_seq=self.rtsp_seq+1
+            logging.info("\n"+"C: PLAY "+self.file_name+" RTSP/1.0"+"\n"+"C: CSeq: "+str(self.rtsp_seq)+"\n"+"C: Session: "+str(self.session_id))
             self.current_state = State.PLAYING
 
     def pause_video(self, event=None):
         if self.current_state == State.INIT:
-            self.logger.error("No video to pause, press setup to choose one")
+            logging.error("No video to pause, press setup to choose one")
         elif self.current_state == State.READY:
-            print("The video is already paused")
+            logging.error("The video is already paused")
         else:
-            print("Pausing video")
+            self.rtsp_seq=self.rtsp_seq+1
+            logging.info("\n"+"C: PAUSE "+self.file_name+" RTSP/1.0"+"\n"+"C: CSeq: "+str(self.rtsp_seq)+"\n"+"C: Session: "+str(self.session_id))
             self.current_state = State.READY
 
     def stop_video(self, event=None):
         if self.current_state == State.INIT:
-            print("No video to tear down")
+            logging.error("No video to tear down")
         else:
-            print("Tearing video down")
+            self.rtsp_seq=self.rtsp_seq+1
+            logging.info("\n"+"C: TEARDOWN "+self.file_name+" RTSP/1.0"+"\n"+"C: CSeq: "+str(self.rtsp_seq)+"\n"+"C: Session: "+str(self.session_id))
             self.current_state = State.INIT
 
     def _generate_layout(self):
+        ## Create log file
+        logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.DEBUG)
+        ##
         self._load_resources()
 
         self.master.minsize(width=300, height=275)
