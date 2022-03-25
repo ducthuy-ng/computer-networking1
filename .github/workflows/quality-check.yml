@@ -31,6 +31,6 @@ jobs:
       with:
         checkName: 'checking_job'
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.flake8_token }}
     - name: Running pytests
       uses: cclauss/GitHub-Action-for-pytest@0.5.0
