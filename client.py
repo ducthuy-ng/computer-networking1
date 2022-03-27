@@ -48,10 +48,8 @@ class Client:
             self.sequence_number += 1
             payload = f"SETUP {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Transport: RTP/UDP; client_port= {RTP_PORT}"
-            self.connection_socket.send(payload.encode('utf-8'))
-
-            response = self._parse_simple_rtsp_response(self.get_server_response())
+                      f"Transport: RTP/UDP; client_port= {RTP_PORT}\n"
+            response = self._parse_simple_rtsp_response(self.send_request_and_receive_response(payload))
 
             self.session_id = response['session_id']
 
@@ -67,8 +65,10 @@ class Client:
             self.sequence_number += 1
             payload = f"PLAY {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
+                      f"Session: {self.session_id}\n"
+            response = self.send_request_and_receive_response(payload)
+
+            self.logger.debug(response)
 
             # response = self.get_server_response()
 
@@ -85,10 +85,10 @@ class Client:
             self.sequence_number += 1
             payload = f"PAUSE {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
+                      f"Session: {self.session_id}\n"
+            response = self.send_request_and_receive_response(payload)
 
-            # response = self.get_server_response()
+            self.logger.debug(response)
 
             self.current_state = ClientState.READY
 
@@ -101,10 +101,10 @@ class Client:
             self.sequence_number += 1
             payload = f"TEARDOWN {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
+                      f"Session: {self.session_id}\n"
+            response = self.send_request_and_receive_response(payload)
 
-            # response = self.get_server_response()
+            self.logger.debug(response)
 
             self.current_state = ClientState.INIT
 
@@ -148,6 +148,7 @@ class Client:
 
     def _on_close(self):
         self.connection_socket.close()
+        self.master.destroy()
 
     def connect_to_server(self):
         self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -156,20 +157,25 @@ class Client:
         except TimeoutError:
             self.logger.error(f"Connection to {SERVER_ADDR} failed.")
 
-    def get_server_response(self) -> bytes:
-        while True:
-            response = self.connection_socket.recv(CLIENT_RECV_BUFFER)
+    def send_request_and_receive_response(self, request: str) -> str:
+        try:
+            self.connection_socket.sendall(request.encode("utf-8"))
 
-            if response:
-                return response
+            response: bytes = self.connection_socket.recv(CLIENT_RECV_BUFFER)
+            if not response:
+                raise ConnectionError
+        except ConnectionError:
+            self.logger.error("Server has crashed, please try again")
+            response = b''
+        return response.decode("utf-8")
 
     @staticmethod
-    def _parse_simple_rtsp_response(data: bytes) -> dict[str, Any]:
-        decoded_data = data.decode('utf-8').split('\n')
+    def _parse_simple_rtsp_response(data: str) -> dict[str, Any]:
+        split_data = data.split('\n')
 
-        parse_response = {'status_code': int(decoded_data[0].split(' ')[1]),
-                          'sequence_number': int(decoded_data[1].split(' ')[1]),
-                          'session_id': int(decoded_data[2].split(' ')[1])}
+        parse_response = {'status_code': int(split_data[0].split(' ')[1]),
+                          'sequence_number': int(split_data[1].split(' ')[1]),
+                          'session_id': int(split_data[2].split(' ')[1])}
 
         return parse_response
 

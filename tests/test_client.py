@@ -17,7 +17,7 @@ class MockSocket:
     def connect(self, addr):
         pass
 
-    def send(self, data):
+    def sendall(self, data):
         print(data)
 
     def recv(self, byte_size):
