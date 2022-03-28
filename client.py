@@ -3,7 +3,8 @@ import socket
 import tkinter as tk
 from enum import Enum
 from typing import Optional, Any
-
+from PIL import Image, ImageTk
+import io
 SERVER_ADDR = 'localhost'
 SERVER_PORT = 2103
 RTP_PORT = 2103
@@ -34,10 +35,13 @@ class Client:
         self.opening_filename: str = "movie.Mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
+        self.current_frame: int = 0
         self.current_state: ClientState = ClientState.INIT
 
         self._generate_layout()
-        self.connect_to_server()
+        self.label = tk.Label(self.master, height=19)
+        self.label.grid(row=0, column=0, columnspan=4, sticky=tk.W + tk.E + tk.N + tk.S, padx=5, pady=5)
+        #self.connect_to_server()
 
     def setup_video(self, event=None):
         if self.current_state != ClientState.INIT:
@@ -147,7 +151,8 @@ class Client:
         self.resource_holder.pause_icon = tk.PhotoImage(file="res/outline_pause_black_24dp.png")
 
     def _on_close(self):
-        self.connection_socket.close()
+        self.master.destroy()
+        #self.connection_socket.close()
 
     def connect_to_server(self):
         self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -172,6 +177,13 @@ class Client:
                           'session_id': int(decoded_data[2].split(' ')[1])}
 
         return parse_response
+
+    def _update_image(self, data):
+        try:
+            photo = ImageTk.PhotoImage(Image.open(io.BytesIO(data)))
+        except:
+            self.label.configure(image=photo, height=288)
+            self.label.image = photo
 
 
 if __name__ == '__main__':
