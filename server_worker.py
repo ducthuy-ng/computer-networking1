@@ -5,6 +5,7 @@ import socket
 import threading
 from enum import Enum
 from typing import Tuple, Optional
+from rtp_packet import RtpPacket
 
 from video_stream import VideoStream
 
@@ -37,7 +38,7 @@ class ServerWorker(threading.Thread):
         self.video_path: pathlib.Path = video_path
 
         self.current_session_id: Optional[int] = None
-        self.streaming_thread = threading.Thread(target=self._stream_video)
+        self.streaming_thread = None
 
         self.stream_handler: Optional[VideoStream] = None
         self.stream_stop_flag: threading.Event = threading.Event()
@@ -50,7 +51,32 @@ class ServerWorker(threading.Thread):
 
     def _stream_video(self):
         """Private method for sending RTP packets"""
-        pass
+        self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        build_rtp = lambda payload, frame_nbr : RtpPacket.encode(
+            version=2,
+            padding=0,
+            extension=0,
+            cc=0,
+            marker=0,
+            payload_type=26, # MJPEG
+            seq_num=frame_nbr,
+            ssrc=0,
+            payload=payload
+        )
+        
+        while True:
+            self.stream_stop_flag.wait(timeout=0.05)
+            if self.stream_stop_flag.is_set():
+                break
+
+            payload = self.stream_handler.next_frame()
+            if payload:
+                frame_nbr = self.stream_handler.frame_nbr()
+                try:
+                    self.rtp_socket.sendto(build_rtp(payload, frame_nbr), (self.client_addr[0], self.rtp_port))
+                except:
+                    print("Connection Error")
 
     def run(self) -> None:
         """
@@ -97,7 +123,7 @@ class ServerWorker(threading.Thread):
                 self.reply_rtsp(RespondType.OK_200, seq[1])
 
                 # Get the RTP/UDP port from the last line
-                self.rtp_port = request[2].split(' ')[3]
+                self.rtp_port = int(request[2].split(' ')[3])
 
         # Process PLAY request
         elif request_type == RequestType.PLAY:
@@ -105,13 +131,13 @@ class ServerWorker(threading.Thread):
                 self.logger.debug("processing PLAY")
                 self.state = ServerState.PLAYING
 
-                # Create a new socket for RTP/UDP
-                # self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
                 self.reply_rtsp(RespondType.OK_200, seq[1])
 
-                # # Create a new thread and start sending RTP packets
-                # self.streaming_thread.start()
+                # Create a new thread and start sending RTP packets
+
+                self.streaming_thread = threading.Thread(target=self._stream_video)
+                self.streaming_thread.start()
+                    
 
         # Process PAUSE request
         elif request_type == RequestType.PAUSE:
@@ -123,6 +149,8 @@ class ServerWorker(threading.Thread):
 
                 self.reply_rtsp(RespondType.OK_200, seq[1])
 
+                
+
         # Process TEARDOWN request
         elif request_type == RequestType.TEARDOWN:
             self.state = ServerState.INIT
@@ -133,8 +161,8 @@ class ServerWorker(threading.Thread):
             self.reply_rtsp(RespondType.OK_200, seq[1])
 
             # Close the RTP socket
-            # self.rtp_socket.close()
-            # self.rtp_socket = None
+            self.rtp_socket.close()
+            self.rtp_socket = None
 
     def reply_rtsp(self, code: RespondType, seq: int) -> None:
         """Send RTSP reply to the client."""

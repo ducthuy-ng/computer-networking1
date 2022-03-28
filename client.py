@@ -1,14 +1,18 @@
 import logging
 import socket
+import threading
 import tkinter as tk
 from enum import Enum
 from typing import Optional, Any
 
+from rtp_packet import RtpPacket
+
 SERVER_ADDR = 'localhost'
 SERVER_PORT = 2103
-RTP_PORT = 2103
+RTP_PORT = 25000
 
 CLIENT_RECV_BUFFER = 1024
+RTP_RECV_BUFFER = 20480
 
 
 class ClientState(Enum):
@@ -29,12 +33,15 @@ class Client:
         self.logger = logging.getLogger("streaming-app.client")
 
         self.connection_socket: Optional[socket.socket] = None
+        self.rtp_socket: Optional[socket.socket] = None
         self.resource_holder = ResourceHolder()
 
         self.opening_filename: str = "movie.Mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
         self.current_state: ClientState = ClientState.INIT
+
+        self.tear_down_Acked = 0
 
         self._generate_layout()
         self.connect_to_server()
@@ -56,6 +63,7 @@ class Client:
             self.session_id = response['session_id']
 
             self.current_state = ClientState.READY
+            self.setup_rtp()
 
     def play_video(self, event=None):
         if self.current_state == ClientState.PLAYING:
@@ -68,11 +76,15 @@ class Client:
             payload = f"PLAY {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
                       f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
 
-            # response = self.get_server_response()
 
             self.current_state = ClientState.PLAYING
+            # response = self.get_server_response()
+            threading.Thread(target=self.listen_rtp).start()
+            self.event = threading.Event()
+            self.event.clear()
+            
+            self.connection_socket.send(payload.encode('utf-8'))
 
     def pause_video(self, event=None):
         if self.current_state == ClientState.INIT:
@@ -88,9 +100,8 @@ class Client:
                       f"Session: {self.session_id}"
             self.connection_socket.send(payload.encode('utf-8'))
 
-            # response = self.get_server_response()
-
             self.current_state = ClientState.READY
+            self.event.set()
 
     def stop_video(self, event=None):
         if self.current_state == ClientState.INIT:
@@ -104,9 +115,8 @@ class Client:
                       f"Session: {self.session_id}"
             self.connection_socket.send(payload.encode('utf-8'))
 
-            # response = self.get_server_response()
-
             self.current_state = ClientState.INIT
+            self.tear_down_Acked = 1
 
     def _generate_layout(self):
         self._load_resources()
@@ -162,6 +172,44 @@ class Client:
 
             if response:
                 return response
+
+    def setup_rtp(self):
+        self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.rtp_socket.settimeout(0.5)
+        try:
+            self.rtp_socket.bind((SERVER_ADDR,RTP_PORT))
+        except:
+            print(f'Unable to bind port {SERVER_PORT}. Please try again')
+        
+    def listen_rtp(self):
+        while True:
+            try:
+                data = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
+                if data[0]:
+                    rtp_packet = RtpPacket()
+                    rtp_packet.decode(data[0])
+                    frame = rtp_packet.get_seq_num()
+                    print(frame)
+            except:
+                # Stop listening upon requesting PAUSE or TEARDOWN
+                if self.event.is_set():
+                    break
+
+                # Upon receiving ACK for TEARDOWN request,
+                # close the RTP socket
+                if self.tear_down_Acked == 1:
+                    self.rtp_socket.shutdown(socket.SHUT_RDWR)
+                    self.rtp_socket.close()
+                    break
+                
+
+    def write_frame(self, data):
+        """Write the received frame to a temp image file. Return the image file."""
+        pass
+	
+    def update_movie(self, imageFile):
+        """Update the image file as video frame in the GUI."""
+        pass
 
     @staticmethod
     def _parse_simple_rtsp_response(data: bytes) -> dict[str, Any]:
