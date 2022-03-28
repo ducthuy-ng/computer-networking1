@@ -39,8 +39,6 @@ class Client:
         self.current_state: ClientState = ClientState.INIT
 
         self._generate_layout()
-        self.label = tk.Label(self.master, height=19)
-        self.label.grid(row=0, column=0, columnspan=4, sticky=tk.W + tk.E + tk.N + tk.S, padx=5, pady=5)
         #self.connect_to_server()
 
     def setup_video(self, event=None):
@@ -145,7 +143,6 @@ class Client:
         teardown_btn = tk.Button(button_container, text="Teardown")
         teardown_btn.bind("<Button-1>", self.stop_video)
         teardown_btn.pack(side=tk.LEFT, fill=tk.Y, anchor='w', expand=True)
-
     def _load_resources(self):
         self.resource_holder.play_icon = tk.PhotoImage(file="res/outline_play_arrow_black_24dp.png")
         self.resource_holder.pause_icon = tk.PhotoImage(file="res/outline_pause_black_24dp.png")
@@ -182,9 +179,9 @@ class Client:
         try:
             photo = ImageTk.PhotoImage(Image.open(io.BytesIO(data)))
         except:
-            self.label.configure(image=photo, height=288)
-            self.label.image = photo
-
+            self.logger.error('Image error')
+        self.video_canvas.create_image(0, 0, anchor=tk.CENTER, image=photo)
+        self.video_canvas.image = photo
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
