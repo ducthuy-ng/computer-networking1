@@ -179,10 +179,11 @@ class Client:
         try:
             self.rtp_socket.bind((SERVER_ADDR,RTP_PORT))
         except:
-            print(f'Unable to bind port {SERVER_PORT}. Please try again')
+            print(f'Unable to bind port {SERVER_PORT}. Please try again.')
         
     def listen_rtp(self):
         while True:
+            print('listening...')
             try:
                 data = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
                 if data[0]:

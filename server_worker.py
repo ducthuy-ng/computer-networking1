@@ -51,9 +51,9 @@ class ServerWorker(threading.Thread):
 
     def _stream_video(self):
         """Private method for sending RTP packets"""
-        self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-        build_rtp = lambda payload, frame_nbr : RtpPacket.encode(
+        # function to build an RTP packet
+        build_rtp_packet = lambda payload, frame_nbr : RtpPacket.encode(
             version=2,
             padding=0,
             extension=0,
@@ -66,15 +66,22 @@ class ServerWorker(threading.Thread):
         )
         
         while True:
-            self.stream_stop_flag.wait(timeout=0.05)
+            # 0.05s interval
+            self.stream_stop_flag.wait(0.05)
+
+            # terminate this thread when the client hits PAUSE or TEARDOWN
             if self.stream_stop_flag.is_set():
                 break
-
+            
+            # send rtp packet
             payload = self.stream_handler.next_frame()
             if payload:
                 frame_nbr = self.stream_handler.frame_nbr()
                 try:
-                    self.rtp_socket.sendto(build_rtp(payload, frame_nbr), (self.client_addr[0], self.rtp_port))
+                    self.rtp_socket.sendto(
+                        build_rtp_packet(payload, frame_nbr), 
+                        (self.client_addr[0], self.rtp_port)
+                    )
                 except:
                     print("Connection Error")
 
@@ -124,6 +131,10 @@ class ServerWorker(threading.Thread):
 
                 # Get the RTP/UDP port from the last line
                 self.rtp_port = int(request[2].split(' ')[3])
+
+                # Set up RTP port for streaming video
+                self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
 
         # Process PLAY request
         elif request_type == RequestType.PLAY:
