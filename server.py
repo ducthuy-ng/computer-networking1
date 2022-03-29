@@ -20,12 +20,13 @@ class Server:
         try:
             while True:
                 connection_socket, client_addr = self.rtsp_socket.accept()
-                ServerWorker(connection_socket, client_addr, self.video_folder).run()
+                ServerWorker(connection_socket, client_addr, self.video_folder, logger).run()
         except KeyboardInterrupt:
             pass
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
     server = Server()
     server.run()

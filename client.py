@@ -9,7 +9,6 @@ from rtp_packet import RtpPacket
 
 SERVER_ADDR = 'localhost'
 SERVER_PORT = 2103
-RTP_PORT = 25000
 
 CLIENT_RECV_BUFFER = 1024
 RTP_RECV_BUFFER = 20480
@@ -32,16 +31,18 @@ class Client:
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.logger = logging.getLogger("streaming-app.client")
 
-        self.connection_socket: Optional[socket.socket] = None
+        self.connection_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # RTP packet configuration
         self.rtp_socket: Optional[socket.socket] = None
+        self.stream_stop_flag: threading.Event = threading.Event()
+
         self.resource_holder = ResourceHolder()
 
         self.opening_filename: str = "movie.Mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
         self.current_state: ClientState = ClientState.INIT
-
-        self.tear_down_Acked = 0
 
         self._generate_layout()
         self.connect_to_server()
@@ -52,16 +53,17 @@ class Client:
         else:
             self.logger.debug("Setting video up")
 
+            self.setup_rtp()
+
             self.sequence_number += 1
             payload = f"SETUP {self.opening_filename} RTSP/1.0\n" \
-                      f"CSeq: {self.sequence_number} \n" \
-                      f"Transport: RTP/UDP; client_port= {RTP_PORT}\n"
+                      f"CSeq: {self.sequence_number}\n" \
+                      f"Transport: RTP/UDP; client_port= {self.rtp_socket.getsockname()[1]}\n"
             response = self._parse_simple_rtsp_response(self.send_request_and_receive_response(payload))
 
             self.session_id = response['session_id']
 
             self.current_state = ClientState.READY
-            self.setup_rtp()
 
     def play_video(self, event=None):
         if self.current_state == ClientState.PLAYING:
@@ -70,22 +72,18 @@ class Client:
             self.logger.debug("No video to play, press setup to choose one")
         else:
             self.logger.debug("Playing video")
+
             self.sequence_number += 1
             payload = f"PLAY {self.opening_filename} RTSP/1.0\n" \
-                      f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-
+                      f"CSeq: {self.sequence_number}\n" \
+                      f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
 
-            self.logger.debug(response)
             self.current_state = ClientState.PLAYING
 
             # response = self.get_server_response()
             threading.Thread(target=self.listen_rtp).start()
-            self.event = threading.Event()
-            self.event.clear()
-
-            self.connection_socket.send(payload.encode('utf-8'))
+            self.stream_stop_flag.clear()
 
     def pause_video(self, event=None):
         if self.current_state == ClientState.INIT:
@@ -97,14 +95,12 @@ class Client:
 
             self.sequence_number += 1
             payload = f"PAUSE {self.opening_filename} RTSP/1.0\n" \
-                      f"CSeq: {self.sequence_number} \n" \
+                      f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
 
-            self.logger.debug(response)
-
             self.current_state = ClientState.READY
-            self.event.set()
+            self.stream_stop_flag.set()
 
     def stop_video(self, event=None):
         if self.current_state == ClientState.INIT:
@@ -114,14 +110,12 @@ class Client:
 
             self.sequence_number += 1
             payload = f"TEARDOWN {self.opening_filename} RTSP/1.0\n" \
-                      f"CSeq: {self.sequence_number} \n" \
+                      f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
 
-            self.logger.debug(response)
-
             self.current_state = ClientState.INIT
-            self.tear_down_Acked = 1
+            self.stream_stop_flag.set()
 
     def _generate_layout(self):
         self._load_resources()
@@ -163,6 +157,10 @@ class Client:
 
     def _on_close(self):
         self.connection_socket.close()
+        if self.rtp_socket:
+            self.rtp_socket.close()
+            self.rtp_socket = None
+
         self.master.destroy()
 
     def connect_to_server(self):
@@ -188,32 +186,25 @@ class Client:
         self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rtp_socket.settimeout(0.5)
         try:
-            self.rtp_socket.bind((SERVER_ADDR,RTP_PORT))
-        except:
-            print(f'Unable to bind port {SERVER_PORT}. Please try again.')
+            self.rtp_socket.bind(("", 0))
+        except socket.error:
+            print(f"An error occurred while setting UDP port, please try again later")
 
     def listen_rtp(self):
+        self.logger.debug(f"Listening for streams")
         while True:
-            print('listening...')
             try:
-                data = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
-                if data[0]:
+                data, addr = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
+                if data:
                     rtp_packet = RtpPacket()
-                    rtp_packet.decode(data[0])
-                    frame = rtp_packet.get_seq_num()
-                    print(frame)
-            except:
+                    rtp_packet.decode(data)
+            except TimeoutError:
                 # Stop listening upon requesting PAUSE or TEARDOWN
-                if self.event.is_set():
+                if self.stream_stop_flag.is_set():
+                    if self.current_state == ClientState.INIT:
+                        self.rtp_socket.shutdown()
+                        self.rtp_socket.close()
                     break
-
-                # Upon receiving ACK for TEARDOWN request,
-                # close the RTP socket
-                if self.tear_down_Acked == 1:
-                    self.rtp_socket.shutdown(socket.SHUT_RDWR)
-                    self.rtp_socket.close()
-                    break
-
 
     def write_frame(self, data):
         """Write the received frame to a temp image file. Return the image file."""
