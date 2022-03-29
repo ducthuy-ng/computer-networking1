@@ -1,3 +1,4 @@
+import logging
 import pathlib
 import socket
 
@@ -25,5 +26,6 @@ class Server:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     server = Server()
     server.run()

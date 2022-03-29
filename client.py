@@ -55,10 +55,8 @@ class Client:
             self.sequence_number += 1
             payload = f"SETUP {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Transport: RTP/UDP; client_port= {RTP_PORT}"
-            self.connection_socket.send(payload.encode('utf-8'))
-
-            response = self._parse_simple_rtsp_response(self.get_server_response())
+                      f"Transport: RTP/UDP; client_port= {RTP_PORT}\n"
+            response = self._parse_simple_rtsp_response(self.send_request_and_receive_response(payload))
 
             self.session_id = response['session_id']
 
@@ -77,13 +75,16 @@ class Client:
                       f"CSeq: {self.sequence_number} \n" \
                       f"Session: {self.session_id}"
 
+            response = self.send_request_and_receive_response(payload)
 
+            self.logger.debug(response)
             self.current_state = ClientState.PLAYING
+
             # response = self.get_server_response()
             threading.Thread(target=self.listen_rtp).start()
             self.event = threading.Event()
             self.event.clear()
-            
+
             self.connection_socket.send(payload.encode('utf-8'))
 
     def pause_video(self, event=None):
@@ -97,8 +98,10 @@ class Client:
             self.sequence_number += 1
             payload = f"PAUSE {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
+                      f"Session: {self.session_id}\n"
+            response = self.send_request_and_receive_response(payload)
+
+            self.logger.debug(response)
 
             self.current_state = ClientState.READY
             self.event.set()
@@ -112,8 +115,10 @@ class Client:
             self.sequence_number += 1
             payload = f"TEARDOWN {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number} \n" \
-                      f"Session: {self.session_id}"
-            self.connection_socket.send(payload.encode('utf-8'))
+                      f"Session: {self.session_id}\n"
+            response = self.send_request_and_receive_response(payload)
+
+            self.logger.debug(response)
 
             self.current_state = ClientState.INIT
             self.tear_down_Acked = 1
@@ -158,6 +163,7 @@ class Client:
 
     def _on_close(self):
         self.connection_socket.close()
+        self.master.destroy()
 
     def connect_to_server(self):
         self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -166,12 +172,17 @@ class Client:
         except TimeoutError:
             self.logger.error(f"Connection to {SERVER_ADDR} failed.")
 
-    def get_server_response(self) -> bytes:
-        while True:
-            response = self.connection_socket.recv(CLIENT_RECV_BUFFER)
+    def send_request_and_receive_response(self, request: str) -> str:
+        try:
+            self.connection_socket.sendall(request.encode("utf-8"))
 
-            if response:
-                return response
+            response: bytes = self.connection_socket.recv(CLIENT_RECV_BUFFER)
+            if not response:
+                raise ConnectionError
+        except ConnectionError:
+            self.logger.error("Server has crashed, please try again")
+            response = b''
+        return response.decode("utf-8")
 
     def setup_rtp(self):
         self.rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -180,7 +191,7 @@ class Client:
             self.rtp_socket.bind((SERVER_ADDR,RTP_PORT))
         except:
             print(f'Unable to bind port {SERVER_PORT}. Please try again.')
-        
+
     def listen_rtp(self):
         while True:
             print('listening...')
@@ -202,23 +213,23 @@ class Client:
                     self.rtp_socket.shutdown(socket.SHUT_RDWR)
                     self.rtp_socket.close()
                     break
-                
+
 
     def write_frame(self, data):
         """Write the received frame to a temp image file. Return the image file."""
         pass
-	
+
     def update_movie(self, imageFile):
         """Update the image file as video frame in the GUI."""
         pass
 
     @staticmethod
-    def _parse_simple_rtsp_response(data: bytes) -> dict[str, Any]:
-        decoded_data = data.decode('utf-8').split('\n')
+    def _parse_simple_rtsp_response(data: str) -> dict[str, Any]:
+        split_data = data.split('\n')
 
-        parse_response = {'status_code': int(decoded_data[0].split(' ')[1]),
-                          'sequence_number': int(decoded_data[1].split(' ')[1]),
-                          'session_id': int(decoded_data[2].split(' ')[1])}
+        parse_response = {'status_code': int(split_data[0].split(' ')[1]),
+                          'sequence_number': int(split_data[1].split(' ')[1]),
+                          'session_id': int(split_data[2].split(' ')[1])}
 
         return parse_response
 

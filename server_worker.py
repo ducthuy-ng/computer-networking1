@@ -20,6 +20,7 @@ class ServerState(Enum):
     INIT = 0
     READY = 1
     PLAYING = 2
+    STOP = 3
 
 
 class RequestType(Enum):
@@ -89,14 +90,16 @@ class ServerWorker(threading.Thread):
         """
         Receive RTSP request from the client.
         """
-        while True:
-            data = self.connection_socket.recv(256)
-            if not data:
-                self.logger.info(f"{self.client_addr[0]} has disconnected")
-                break
+        try:
+            while self.state != ServerState.STOP:
+                data: bytes = self.connection_socket.recv(256)
+                if not data:
+                    raise ConnectionError
 
-            print("Data received:\n" + data.decode("utf-8"))
-            self.process_rtsp_request(data.decode("utf-8"))
+                print("Data received:\n" + data.decode("utf-8"))
+                self.process_rtsp_request(data.decode("utf-8"))
+        except ConnectionError:
+            self._cleanup()
 
     def process_rtsp_request(self, data):
         """Process RTSP request sent from the client."""
@@ -175,12 +178,20 @@ class ServerWorker(threading.Thread):
             self.rtp_socket.close()
             self.rtp_socket = None
 
+    def _cleanup(self):
+        self.logger.info(f"Client {self.client_addr} disconnected")
+        self.connection_socket.close()
+        self.state = ServerState.STOP
+
     def reply_rtsp(self, code: RespondType, seq: int) -> None:
         """Send RTSP reply to the client."""
         if code == RespondType.OK_200:
             # print("200 OK")
             reply = f"RTSP/1.0 200 OK\nCSeq: {seq}\nSession: {self.current_session_id}\n"
-            self.connection_socket.send(reply.encode())
+            try:
+                self.connection_socket.sendall(reply.encode("utf-8"))
+            except ConnectionError:
+                self._cleanup()
 
         # Error messages
         elif code == RespondType.FILE_NOT_FOUND_404:
