@@ -4,6 +4,8 @@ import threading
 import tkinter as tk
 from enum import Enum
 from typing import Optional, Any
+from PIL import Image, ImageTk
+import io
 
 from rtp_packet import RtpPacket
 
@@ -42,6 +44,7 @@ class Client:
         self.opening_filename: str = "movie.Mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
+        self.current_frame: int = 0
         self.current_state: ClientState = ClientState.INIT
 
         self._generate_layout()
@@ -81,7 +84,6 @@ class Client:
 
             self.current_state = ClientState.PLAYING
 
-            # response = self.get_server_response()
             threading.Thread(target=self.listen_rtp).start()
             self.stream_stop_flag.clear()
 
@@ -206,14 +208,6 @@ class Client:
                         self.rtp_socket.close()
                     break
 
-    def write_frame(self, data):
-        """Write the received frame to a temp image file. Return the image file."""
-        pass
-
-    def update_movie(self, imageFile):
-        """Update the image file as video frame in the GUI."""
-        pass
-
     @staticmethod
     def _parse_simple_rtsp_response(data: str) -> dict[str, Any]:
         split_data = data.split('\n')
@@ -223,6 +217,14 @@ class Client:
                           'session_id': int(split_data[2].split(' ')[1])}
 
         return parse_response
+
+    def _update_image(self, data):
+        try:
+            photo = ImageTk.PhotoImage(Image.open(io.BytesIO(data)))
+        except:
+            self.logger.error('Image error')
+        self.video_canvas.create_image(0, 0, anchor=tk.CENTER, image=photo)
+        self.video_canvas.image = photo
 
 
 if __name__ == '__main__':
