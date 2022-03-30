@@ -82,7 +82,7 @@ class ServerWorker(threading.Thread):
         # Get the RTSP sequence number
         seq = int(request[1].split(' ')[1])
 
-        # Check if sequence number matches
+        # Check if sequence number and session ID match
         if seq != self.seq:
             self.reply_rtsp(RespondType.CON_ERR_500)
             return
@@ -224,6 +224,8 @@ class ServerWorker(threading.Thread):
 
         # Error messages
         elif code == RespondType.FILE_NOT_FOUND_404:
-            self.logger.error("404 NOT FOUND")
+            reply = f"RTSP/1.0 404 FILE NOT FOUND\nCSeq: {self.seq}\n"
+            self.connection_socket.sendall(reply.encode("utf-8"))
         elif code == RespondType.CON_ERR_500:
-            self.logger.error("500 CONNECTION ERROR")
+            reply = f"RTSP/1.0 500 CONNECTION ERROR\nCSeq: {self.seq}\n"
+            self.connection_socket.sendall(reply.encode("utf-8"))
