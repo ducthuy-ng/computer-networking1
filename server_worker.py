@@ -211,7 +211,7 @@ class ServerWorker(threading.Thread):
             self.logger.debug("Stop streaming")
 
     def _cleanup(self):
-        self.logger.info(f"Client has disconnected")
+        self.logger.info("Client has disconnected")
         self.connection_socket.close()
         if self.rtp_socket:
             self.rtp_socket.close()
