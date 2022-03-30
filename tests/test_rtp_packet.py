@@ -50,7 +50,7 @@ def test_encoding_byte_2_3():
     assert result[2] == 0b11111111
     assert result[3] == 0b11111111
 
-    with pytest.raises(OverflowError) as overflow_exception:
+    with pytest.raises(OverflowError):
         result: bytearray = RtpPacket.encode(2, 1, 1, 1, 1, 26, 65536, 0, bytearray(5))
 
 

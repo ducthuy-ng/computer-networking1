@@ -1,11 +1,13 @@
+import io
 import logging
 import socket
 import threading
 import tkinter as tk
 from enum import Enum
+from queue import SimpleQueue
 from typing import Optional, Any
+
 from PIL import Image, ImageTk
-import io
 
 from rtp_packet import RtpPacket
 
@@ -25,6 +27,8 @@ class ClientState(Enum):
 class ResourceHolder(tuple):
     play_icon: tk.PhotoImage
     pause_icon: tk.PhotoImage
+
+    splash_screen: Image
 
 
 class Client:
@@ -50,6 +54,13 @@ class Client:
         self._generate_layout()
         self.connect_to_server()
 
+        # Canvas settings
+        self.canvas_width: int = 0
+        self.canvas_height: int = 0
+        self.canvas_buffer = None
+        self.video_buffer: Image = self.resource_holder.splash_screen
+        self.canvas_image_prev_id_queue: SimpleQueue = SimpleQueue()
+
     def setup_video(self, event=None):
         if self.current_state != ClientState.INIT:
             self.logger.debug("Video has already been setup")
@@ -62,9 +73,12 @@ class Client:
             payload = f"SETUP {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Transport: RTP/UDP; client_port= {self.rtp_socket.getsockname()[1]}\n"
-            response = self._parse_simple_rtsp_response(self.send_request_and_receive_response(payload))
+            response = self.send_request_and_receive_response(payload)
+            self.logger.debug(response.encode("utf-8"))
 
-            self.session_id = response['session_id']
+            parsed_response = self._parse_simple_rtsp_response(response)
+
+            self.session_id = parsed_response['session_id']
 
             self.current_state = ClientState.READY
 
@@ -81,6 +95,8 @@ class Client:
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
+
+            self.logger.debug(response.encode("utf-8"))
 
             self.current_state = ClientState.PLAYING
 
@@ -101,6 +117,8 @@ class Client:
                       f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
 
+            self.logger.debug(response.encode("utf-8"))
+
             self.current_state = ClientState.READY
             self.stream_stop_flag.set()
 
@@ -115,6 +133,12 @@ class Client:
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             response = self.send_request_and_receive_response(payload)
+
+            self.logger.debug(response.encode("utf-8"))
+
+            # Re-set splash screen
+            self.video_buffer = self.resource_holder.splash_screen.resize((self.canvas_width, self.canvas_height))
+            self._update_image()
 
             self.current_state = ClientState.INIT
             self.stream_stop_flag.set()
@@ -131,6 +155,7 @@ class Client:
         self.video_canvas: tk.Canvas = tk.Canvas(self.master)
         self.video_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
         self.video_canvas.config(bg='white')
+        self.video_canvas.bind("<Configure>", self._on_window_resize)
 
         # Bottom row container
         button_container = tk.Frame(self.master, height=50)
@@ -157,6 +182,8 @@ class Client:
         self.resource_holder.play_icon = tk.PhotoImage(file="res/outline_play_arrow_black_24dp.png")
         self.resource_holder.pause_icon = tk.PhotoImage(file="res/outline_pause_black_24dp.png")
 
+        self.resource_holder.splash_screen = Image.open("res/splash_screen.png")
+
     def _on_close(self):
         self.connection_socket.close()
         if self.rtp_socket:
@@ -164,6 +191,14 @@ class Client:
             self.rtp_socket = None
 
         self.master.destroy()
+        self.connection_socket.close()
+
+    def _on_window_resize(self, event: tk.Event):
+        self.canvas_width = event.width
+        self.canvas_height = event.height
+
+        self.video_buffer = self.video_buffer.resize((self.canvas_width, self.canvas_height))
+        self._update_image()
 
     def connect_to_server(self):
         self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -190,21 +225,29 @@ class Client:
         try:
             self.rtp_socket.bind(("", 0))
         except socket.error:
-            print(f"An error occurred while setting UDP port, please try again later")
+            print("An error occurred while setting UDP port, please try again later")
 
     def listen_rtp(self):
-        self.logger.debug(f"Listening for streams")
+        self.logger.debug("Listening for streams")
         while True:
             try:
                 data, addr = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
                 if data:
                     rtp_packet = RtpPacket()
                     rtp_packet.decode(data)
+
+                    # End of stream
+                    if rtp_packet.payload == bytes(5):
+                        self.logger.debug("Stream has ended")
+                        self.stop_video()
+                        break
+
+                    self._update_image(rtp_packet.payload)
             except TimeoutError:
                 # Stop listening upon requesting PAUSE or TEARDOWN
                 if self.stream_stop_flag.is_set():
                     if self.current_state == ClientState.INIT:
-                        self.rtp_socket.shutdown()
+                        # self.rtp_socket.shutdown()
                         self.rtp_socket.close()
                     break
 
@@ -218,17 +261,29 @@ class Client:
 
         return parse_response
 
-    def _update_image(self, data):
-        try:
-            photo = ImageTk.PhotoImage(Image.open(io.BytesIO(data)))
-        except:
-            self.logger.error('Image error')
-        self.video_canvas.create_image(0, 0, anchor=tk.CENTER, image=photo)
-        self.video_canvas.image = photo
+    def _update_image(self, data: Optional[bytes] = None):
+        if data:
+            self.video_buffer = \
+                Image.open(io.BytesIO(data)).resize((self.canvas_width, self.canvas_height))
+
+        self.canvas_buffer = ImageTk.PhotoImage(self.video_buffer)
+        self.canvas_image_prev_id_queue.put(
+            self.video_canvas.create_image(0, 0, anchor="nw", image=self.canvas_buffer))
+
+        if self.canvas_image_prev_id_queue.qsize() > 5:
+            self.video_canvas.delete(self.canvas_image_prev_id_queue.get())
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
+    logger = logging.getLogger("streaming-app.client")
+    logger.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s')
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
     root = tk.Tk()
 
     player = Client(root)

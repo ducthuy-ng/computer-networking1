@@ -32,7 +32,7 @@ class RequestType(Enum):
 
 class ServerWorker(threading.Thread):
     def __init__(self, connection: socket.socket, client_addr: Tuple,
-                 video_path: pathlib.Path, logger: logging.Logger):
+                 video_path: pathlib.Path):
         super(ServerWorker, self).__init__()
 
         self.connection_socket = connection
@@ -51,7 +51,8 @@ class ServerWorker(threading.Thread):
         self.rtp_port: Optional[int] = None
         self.rtp_socket: Optional[socket.socket] = None
 
-        self.logger = logger
+        self.logger = logging.getLogger(
+            f"streaming-app.server.server-worker-{self.client_addr[0]}:{self.client_addr[1]}")
 
     def run(self) -> None:
         """
@@ -171,6 +172,8 @@ class ServerWorker(threading.Thread):
         """Private method for sending RTP packets"""
         client_rtp_addr = (self.client_addr[0], self.rtp_port)
 
+        data = None
+
         try:
             self.logger.debug(f"Starting stream to client: {client_rtp_addr}")
             while True:
@@ -180,9 +183,12 @@ class ServerWorker(threading.Thread):
                     break
 
                 payload = self.stream_handler.next_frame()
+                if not payload:
+                    payload = bytes(5)
+
                 frame_nbr = self.stream_handler.frame_nbr()
 
-                self.rtp_socket.sendto(RtpPacket.encode(
+                data = RtpPacket.encode(
                     version=2,
                     padding=0,
                     extension=0,
@@ -192,13 +198,20 @@ class ServerWorker(threading.Thread):
                     seq_num=frame_nbr,
                     ssrc=0,
                     payload=payload
-                ), client_rtp_addr)
+                )
+
+                try:
+                    self.rtp_socket.sendto(data, client_rtp_addr)
+                except OSError:
+                    # Exception due to OSX not allowing UDP-package > 9216 bytes
+                    # https://stackoverflow.com/a/35335138
+                    continue
 
         finally:
             self.logger.debug("Stop streaming")
 
     def _cleanup(self):
-        self.logger.info(f"Client {self.client_addr} disconnected")
+        self.logger.info(f"Client has disconnected")
         self.connection_socket.close()
         if self.rtp_socket:
             self.rtp_socket.close()
