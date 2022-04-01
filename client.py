@@ -2,26 +2,24 @@ import io
 import logging
 import socket
 import threading
+import time
 import tkinter as tk
-from enum import Enum
 from queue import SimpleQueue
-from typing import Optional, Any
+from tkinter import messagebox
+from typing import Optional
 
 from PIL import Image, ImageTk
 
+from client_utils import ClientState, RtspResponse
 from rtp_packet import RtpPacket
 
-SERVER_ADDR = 'localhost'
+SERVER_ADDR = '127.0.0.1'
 SERVER_PORT = 2103
+NUM_OF_RETRY = 5
+DELAY_BETWEEN_RETRY = 2
 
 CLIENT_RECV_BUFFER = 1024
 RTP_RECV_BUFFER = 20480
-
-
-class ClientState(Enum):
-    INIT = 0
-    READY = 1
-    PLAYING = 2
 
 
 class ResourceHolder(tuple):
@@ -38,6 +36,7 @@ class Client:
         self.logger = logging.getLogger("streaming-app.client")
 
         self.connection_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connection_socket.settimeout(0.1)
 
         # RTP packet configuration
         self.rtp_socket: Optional[socket.socket] = None
@@ -52,7 +51,7 @@ class Client:
         self.current_state: ClientState = ClientState.INIT
 
         self._generate_layout()
-        self.connect_to_server()
+        self.master.after(1000, self.connect_to_server)
 
         # Canvas settings
         self.canvas_width: int = 0
@@ -63,7 +62,7 @@ class Client:
 
     def setup_video(self, event=None):
         if self.current_state != ClientState.INIT:
-            self.logger.debug("Video has already been setup")
+            messagebox.showerror("Error", "Video has already been setup")
         else:
             self.logger.debug("Setting video up")
 
@@ -73,20 +72,26 @@ class Client:
             payload = f"SETUP {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Transport: RTP/UDP; client_port= {self.rtp_socket.getsockname()[1]}\n"
-            response = self.send_request_and_receive_response(payload)
-            self.logger.debug(response.encode("utf-8"))
+            try:
+                response = RtspResponse(self.send_request_and_receive_response(payload))
+            except ConnectionError:
+                self.connect_to_server()
+                return
 
-            parsed_response = self._parse_simple_rtsp_response(response)
-
-            self.session_id = parsed_response['session_id']
-
-            self.current_state = ClientState.READY
+            if response.status_code == 200:
+                self.session_id = response.get_session_id()
+                self.current_state = ClientState.READY
+            elif response.status_code == 404:
+                messagebox.showerror("Error", "Video file not found")
+            elif response.status_code == 500:
+                messagebox.showerror("Error", "Connection error, please try again later")
+                self._on_close()
 
     def play_video(self, event=None):
         if self.current_state == ClientState.PLAYING:
-            self.logger.debug("The video is already playing")
+            messagebox.showwarning("Warning", "The video is already playing")
         elif self.current_state == ClientState.INIT:
-            self.logger.debug("No video to play, press setup to choose one")
+            messagebox.showwarning("Warning", "No video to play, press SETUP to choose one")
         else:
             self.logger.debug("Playing video")
 
@@ -94,20 +99,28 @@ class Client:
             payload = f"PLAY {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
-            response = self.send_request_and_receive_response(payload)
+            try:
+                response = RtspResponse(self.send_request_and_receive_response(payload))
+            except ConnectionError:
+                self.connect_to_server()
+                self.sequence_number -= 1
+                return
 
-            self.logger.debug(response.encode("utf-8"))
+            if response.status_code == 200:
+                self.logger.debug(response.content)
 
-            self.current_state = ClientState.PLAYING
-
-            threading.Thread(target=self.listen_rtp).start()
-            self.stream_stop_flag.clear()
+                self.current_state = ClientState.PLAYING
+                threading.Thread(target=self.listen_rtp).start()
+                self.stream_stop_flag.clear()
+            elif response.status_code == 404:
+                messagebox.showerror("Error", "Video file not found")
+            elif response.status_code == 500:
+                messagebox.showerror("Error", "Connection error, please try again later")
+                self._on_close()
 
     def pause_video(self, event=None):
-        if self.current_state == ClientState.INIT:
-            self.logger.debug("The video is paused")
-        elif self.current_state == ClientState.READY:
-            self.logger.debug("The video is already paused")
+        if self.current_state == ClientState.INIT or self.current_state == ClientState.READY:
+            messagebox.showwarning("Warning", "The video is already paused")
         else:
             self.logger.debug("Pausing video")
 
@@ -115,16 +128,28 @@ class Client:
             payload = f"PAUSE {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
-            response = self.send_request_and_receive_response(payload)
+            try:
+                response = RtspResponse(self.send_request_and_receive_response(payload))
+            except ConnectionError:
+                self.stream_stop_flag.set()
+                self.connect_to_server()
+                self.sequence_number -= 1
+                return
 
-            self.logger.debug(response.encode("utf-8"))
+            if response.status_code == 200:
+                self.logger.debug(response.content)
 
-            self.current_state = ClientState.READY
-            self.stream_stop_flag.set()
+                self.current_state = ClientState.READY
+                self.stream_stop_flag.set()
+            elif response.status_code == 404:
+                messagebox.showerror("Error", "Video file not found")
+            elif response.status_code == 500:
+                messagebox.showerror("Error", "Connection error, please try again later")
+                self._on_close()
 
     def stop_video(self, event=None):
         if self.current_state == ClientState.INIT:
-            self.logger.debug("No video to tear down")
+            messagebox.showwarning("Warning", "No video to tear down")
         else:
             self.logger.debug("Tearing video down")
 
@@ -132,16 +157,28 @@ class Client:
             payload = f"TEARDOWN {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
-            response = self.send_request_and_receive_response(payload)
+            try:
+                response = RtspResponse(self.send_request_and_receive_response(payload))
+            except ConnectionError:
+                self.stream_stop_flag.set()
+                self.connect_to_server()
+                self.sequence_number -= 1
+                return
 
-            self.logger.debug(response.encode("utf-8"))
+            if response.status_code == 200:
+                self.logger.debug(response.content)
 
-            # Re-set splash screen
-            self.video_buffer = self.resource_holder.splash_screen.resize((self.canvas_width, self.canvas_height))
-            self._update_image()
+                # Re-set splash screen
+                self.video_buffer = self.resource_holder.splash_screen.resize((self.canvas_width, self.canvas_height))
+                self._update_image()
 
-            self.current_state = ClientState.INIT
-            self.stream_stop_flag.set()
+                self.current_state = ClientState.INIT
+                self.stream_stop_flag.set()
+            elif response.status_code == 404:
+                messagebox.showerror("Error", "Video file not found")
+            elif response.status_code == 500:
+                messagebox.showerror("Error", "Connection error, please try again later")
+                self._on_close()
 
     def _generate_layout(self):
         self._load_resources()
@@ -191,7 +228,6 @@ class Client:
             self.rtp_socket = None
 
         self.master.destroy()
-        self.connection_socket.close()
 
     def _on_window_resize(self, event: tk.Event):
         self.canvas_width = event.width
@@ -201,11 +237,21 @@ class Client:
         self._update_image()
 
     def connect_to_server(self):
-        self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            self.connection_socket.connect((SERVER_ADDR, SERVER_PORT))
-        except TimeoutError:
-            self.logger.error(f"Connection to {SERVER_ADDR} failed.")
+        counter = 1
+        while counter < NUM_OF_RETRY:
+            try:
+                self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
+                self.connection_socket.connect((SERVER_ADDR, SERVER_PORT))
+            except socket.error:
+                self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                counter += 1
+                time.sleep(DELAY_BETWEEN_RETRY)
+            else:
+                break
+
+        if counter == NUM_OF_RETRY:
+            messagebox.showerror("Error", "Can't connect to server, please retry later")
+            self._on_close()
 
     def send_request_and_receive_response(self, request: str) -> str:
         try:
@@ -215,7 +261,8 @@ class Client:
             if not response:
                 raise ConnectionError
         except ConnectionError:
-            self.logger.error("Server has crashed, please try again")
+            self.logger.error("Disconnected to Server")
+
             response = b''
         return response.decode("utf-8")
 
@@ -250,16 +297,6 @@ class Client:
                         # self.rtp_socket.shutdown()
                         self.rtp_socket.close()
                     break
-
-    @staticmethod
-    def _parse_simple_rtsp_response(data: str) -> dict[str, Any]:
-        split_data = data.split('\n')
-
-        parse_response = {'status_code': int(split_data[0].split(' ')[1]),
-                          'sequence_number': int(split_data[1].split(' ')[1]),
-                          'session_id': int(split_data[2].split(' ')[1])}
-
-        return parse_response
 
     def _update_image(self, data: Optional[bytes] = None):
         if data:

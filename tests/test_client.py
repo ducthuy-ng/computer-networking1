@@ -36,6 +36,8 @@ class MockSocket:
 @pytest.fixture
 def generate_client(mocker, scope="function"):
     mocker.patch('socket.socket', mock_socket_socket)
+    mocker.patch('tkinter.messagebox.showerror', lambda title, msg: print(msg))
+    mocker.patch('tkinter.messagebox.showwarning', lambda title, msg: print(msg))
     root = tk.Toplevel()
 
     client = Client(root)
