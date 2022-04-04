@@ -1,3 +1,4 @@
+import configparser
 import io
 import logging
 import socket
@@ -12,14 +13,6 @@ from PIL import Image, ImageTk
 
 from client_utils import ClientState, RtspResponse
 from rtp_packet import RtpPacket
-
-SERVER_ADDR = '127.0.0.1'
-SERVER_PORT = 2103
-NUM_OF_RETRY = 5
-DELAY_BETWEEN_RETRY = 2
-
-CLIENT_RECV_BUFFER = 1024
-RTP_RECV_BUFFER = 20480
 
 
 class ResourceHolder(tuple):
@@ -51,6 +44,10 @@ class Client:
 
         self._generate_layout()
         self.master.after(250, self.connect_to_server)
+
+        # Config Parser
+        self.config_parser: configparser.ConfigParser = configparser.ConfigParser()
+        self.config_parser.read("./config/client.cfg")
 
         # Canvas settings
         self.canvas_width: int = 0
@@ -239,18 +236,20 @@ class Client:
 
     def connect_to_server(self):
         counter = 1
-        while counter < NUM_OF_RETRY:
+        connection_option = self.config_parser['Connection']
+        while counter < self.config_parser.getint('Connection', 'num_of_retry'):
             try:
                 self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
-                self.connection_socket.connect((SERVER_ADDR, SERVER_PORT))
+                self.connection_socket.connect((connection_option['server_addr'],
+                                                connection_option.getint('server_port')))
             except socket.error:
                 self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 counter += 1
-                time.sleep(DELAY_BETWEEN_RETRY)
+                time.sleep(self.config_parser.getint('Connection', 'delay_between_retry'))
             else:
                 break
 
-        if counter == NUM_OF_RETRY:
+        if counter == self.config_parser.getint('Connection', 'num_of_retry'):
             messagebox.showerror("Error", "Can't connect to server, please retry later")
             self._on_close()
 
@@ -258,7 +257,7 @@ class Client:
         try:
             self.connection_socket.sendall(request.encode("utf-8"))
 
-            response: bytes = self.connection_socket.recv(CLIENT_RECV_BUFFER)
+            response: bytes = self.connection_socket.recv(self.config_parser.getint('Client', 'rtsp_buffer_size'))
             if not response:
                 raise ConnectionError
         except ConnectionError:
@@ -280,7 +279,7 @@ class Client:
         self.rtp_socket.settimeout(0.5)
         while not self.stream_stop_flag.is_set():
             try:
-                data, addr = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
+                data, addr = self.rtp_socket.recvfrom(self.config_parser.getint('Client', 'rtp_buffer_size'))
                 if data:
                     rtp_packet = RtpPacket()
                     rtp_packet.decode(data)

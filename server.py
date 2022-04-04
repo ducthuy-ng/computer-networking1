@@ -1,3 +1,4 @@
+import configparser
 import logging
 import pathlib
 import socket
@@ -7,16 +8,15 @@ from server_worker import ServerWorker
 
 class Server:
     def __init__(self, hostname: str = None, server_port: int = None):
-        self.hostname: str = hostname if hostname else '0.0.0.0'
-        self.server_port: int = server_port if server_port else 2103
-        self.video_folder: pathlib.Path = pathlib.Path("./videos")
+        self.config_parser: configparser.ConfigParser = configparser.ConfigParser()
+        self.config_parser.read("./config/server.cfg")
         self.rtsp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
         self.logger = logging.getLogger("streaming-app.server")
 
     def run(self):
-        self.rtsp_socket.bind((self.hostname, self.server_port))
-        self.rtsp_socket.listen(5)
+        self.rtsp_socket.bind((self.config_parser['Server']['hostname'],
+                               self.config_parser.getint('Server', 'server_port')))
+        self.rtsp_socket.listen(self.config_parser.getint('Socket', 'backlog'))
 
         self.logger.info("Server Started")
 
@@ -25,7 +25,8 @@ class Server:
             while True:
                 connection_socket, client_addr = self.rtsp_socket.accept()
                 self.logger.debug(f"Client {client_addr[0]}:{client_addr[1]} has connected")
-                ServerWorker(connection_socket, client_addr, self.video_folder).start()
+                ServerWorker(connection_socket, client_addr,
+                             pathlib.Path(self.config_parser['Server']['video_folder'])).start()
         except KeyboardInterrupt:
             pass
 
