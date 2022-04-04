@@ -17,8 +17,17 @@ class MockSocket:
     def connect(self, addr):
         pass
 
-    def send(self, data):
+    def sendall(self, data):
         print(data)
+
+    def settimeout(self, time):
+        pass
+
+    def bind(self, addr):
+        pass
+
+    def getsockname(self):
+        return 'localhost', random.randint(100000, 999999)
 
     def recv(self, byte_size):
         return f"RTSP/1.0 200 OK\nCSeq: 1\nSession: {self.session_id}".encode()
@@ -27,10 +36,12 @@ class MockSocket:
 @pytest.fixture
 def generate_client(mocker, scope="function"):
     mocker.patch('socket.socket', mock_socket_socket)
+    mocker.patch('tkinter.messagebox.showerror', lambda title, msg: print(msg))
+    mocker.patch('tkinter.messagebox.showwarning', lambda title, msg: print(msg))
     root = tk.Toplevel()
 
     client = Client(root)
-
+    root.update()
     return client
 
 
@@ -38,6 +49,7 @@ def test_basic_functional(mocker):
     mocker.patch('socket.socket', mock_socket_socket)
     root = tk.Tk()
     client = Client(root)
+    root.update()
 
     client.setup_video()
     assert client.sequence_number == 1
