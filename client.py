@@ -36,7 +36,6 @@ class Client:
         self.logger = logging.getLogger("streaming-app.client")
 
         self.connection_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connection_socket.settimeout(0.1)
 
         # RTP packet configuration
         self.rtp_socket: Optional[socket.socket] = None
@@ -51,7 +50,7 @@ class Client:
         self.current_state: ClientState = ClientState.INIT
 
         self._generate_layout()
-        self.master.after(1000, self.connect_to_server)
+        self.master.after(250, self.connect_to_server)
 
         # Canvas settings
         self.canvas_width: int = 0
@@ -110,8 +109,8 @@ class Client:
                 self.logger.debug(response.content)
 
                 self.current_state = ClientState.PLAYING
-                threading.Thread(target=self.listen_rtp).start()
                 self.stream_stop_flag.clear()
+                threading.Thread(target=self.listen_rtp).start()
             elif response.status_code == 404:
                 messagebox.showerror("Error", "Video file not found")
             elif response.status_code == 500:
@@ -222,12 +221,14 @@ class Client:
         self.resource_holder.splash_screen = Image.open("res/splash_screen.png")
 
     def _on_close(self):
+        if self.current_state == ClientState.PLAYING:
+            self.stop_video()
+
         self.connection_socket.close()
         if self.rtp_socket:
             self.rtp_socket.close()
-            self.rtp_socket = None
 
-        self.master.destroy()
+        self.master.after(1000, self.master.destroy)
 
     def _on_window_resize(self, event: tk.Event):
         self.canvas_width = event.width
@@ -276,7 +277,8 @@ class Client:
 
     def listen_rtp(self):
         self.logger.debug("Listening for streams")
-        while True:
+        self.rtp_socket.settimeout(0.5)
+        while not self.stream_stop_flag.is_set():
             try:
                 data, addr = self.rtp_socket.recvfrom(RTP_RECV_BUFFER)
                 if data:
