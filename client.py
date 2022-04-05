@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 from queue import SimpleQueue
 from tkinter import messagebox
+from tkinter import ttk
 from typing import Optional
 
 from PIL import Image, ImageTk
@@ -18,6 +19,7 @@ from rtp_packet import RtpPacket
 class ResourceHolder(tuple):
     play_icon: tk.PhotoImage
     pause_icon: tk.PhotoImage
+    setting_icon: tk.PhotoImage
 
     splash_screen: Image
 
@@ -179,11 +181,19 @@ class Client:
     def _generate_layout(self):
         self._load_resources()
 
-        self.master.minsize(width=300, height=275)
+        self.master.minsize(width=300, height=300)
 
         # Title label
-        title_label = tk.Label(text="Hello")
-        title_label.pack(side=tk.TOP, fill=tk.X)
+        title_container = tk.Frame(self.master)
+        title_container.pack(side=tk.TOP, fill=tk.X)
+
+        title_label = tk.Label(title_container, text=self.opening_filename)
+        title_label.pack(side=tk.LEFT, fill=tk.X, expand=1)
+
+        setting_btn = tk.Button(title_container, image=self.resource_holder.setting_icon,
+                                height=30, width=30,
+                                command=lambda: SettingWindow(self.master, self, self.config_parser))
+        setting_btn.pack(side=tk.RIGHT, padx=8, pady=8)
 
         self.video_canvas: tk.Canvas = tk.Canvas(self.master)
         self.video_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
@@ -214,10 +224,13 @@ class Client:
     def _load_resources(self):
         self.resource_holder.play_icon = tk.PhotoImage(file="res/outline_play_arrow_black_24dp.png")
         self.resource_holder.pause_icon = tk.PhotoImage(file="res/outline_pause_black_24dp.png")
+        self.resource_holder.setting_icon = \
+            tk.PhotoImage(file="res/outline_settings_black_24dp.png").subsample(2)
 
         self.resource_holder.splash_screen = Image.open("res/splash_screen.png")
 
     def _on_close(self):
+        self.logger.debug("Shutting down")
         if self.current_state == ClientState.PLAYING:
             self.stop_video()
 
@@ -225,7 +238,7 @@ class Client:
         if self.rtp_socket:
             self.rtp_socket.close()
 
-        self.master.after(1000, self.master.destroy)
+        self.master.after(250, self.master.destroy)
 
     def _on_window_resize(self, event: tk.Event):
         self.canvas_width = event.width
@@ -237,12 +250,16 @@ class Client:
     def connect_to_server(self):
         counter = 1
         connection_option = self.config_parser['Connection']
+        # if self.connection_socket.
         while counter < self.config_parser.getint('Connection', 'num_of_retry'):
             try:
                 self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
                 self.connection_socket.connect((connection_option['server_addr'],
                                                 connection_option.getint('server_port')))
-            except socket.error:
+            except socket.error as error:
+                if error.errno == 56:
+                    break
+
                 self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 counter += 1
                 time.sleep(self.config_parser.getint('Connection', 'delay_between_retry'))
@@ -312,6 +329,71 @@ class Client:
             self.video_canvas.delete(self.canvas_image_prev_id_queue.get())
 
 
+class SettingWindow(tk.Toplevel):
+    def __init__(self, parent: tk.Tk, client: Client, client_settings: configparser.ConfigParser):
+        super().__init__(parent)
+        self.client: Client = client
+        self.client_settings: configparser.ConfigParser = client_settings
+        self.title("Settings")
+
+        self.server_name_entry: ttk.Entry = self._make_entry("Server Name:")
+        self.server_name_entry.insert(0, client_settings.get("Connection", "server_addr"))
+
+        self.server_port_entry: ttk.Entry = self._make_entry("Server Port:")
+        self.server_port_entry.insert(0, client_settings.getint("Connection", "server_port"))
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X, padx=8)
+
+        self.num_of_retry_entry: ttk.Entry = self._make_entry("Num of Retries:")
+        self.num_of_retry_entry.insert(0, client_settings.getint("Connection", "num_of_retry"))
+
+        self.delay_between_retry_entry: ttk.Entry = self._make_entry("Delay of retry:")
+        self.delay_between_retry_entry.insert(0, client_settings.getint("Connection", "delay_between_retry"))
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X, padx=8)
+
+        self.rtsp_buffer_size_entry: ttk.Entry = self._make_entry("RTSP buffer size:")
+        self.rtsp_buffer_size_entry.insert(0, client_settings.getint("Client", "rtsp_buffer_size"))
+
+        self.rtp_buffer_size_entry: ttk.Entry = self._make_entry("RTP buffer size:")
+        self.rtp_buffer_size_entry.insert(0, client_settings.getint("Client", "rtp_buffer_size"))
+
+        button_container = ttk.Frame(self)
+        button_container.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=8)
+
+        save_btn = ttk.Button(button_container, text="Save", default=tk.ACTIVE, command=self.save)
+        save_btn.pack(side=tk.RIGHT)
+
+        cancel_btn = ttk.Button(button_container, text="Cancel", default=tk.NORMAL, command=self.destroy)
+        cancel_btn.pack(side=tk.RIGHT)
+
+    def save(self):
+        self.client_settings.set("Connection", "server_addr", self.server_name_entry.get())
+        self.client_settings.set("Connection", "server_port", self.server_port_entry.get())
+        self.client_settings.set("Connection", "num_of_retry", self.num_of_retry_entry.get())
+        self.client_settings.set("Connection", "delay_between_retry", self.delay_between_retry_entry.get())
+        self.client_settings.set("Client", "rtsp_buffer_size", self.rtsp_buffer_size_entry.get())
+        self.client_settings.set("Client", "rtp_buffer_size", self.rtp_buffer_size_entry.get())
+
+        with open("config/client.cfg", 'w') as config_file:
+            self.client_settings.write(config_file)
+
+        if self.client.current_state != ClientState.INIT:
+            self.client.stop_video()
+        self.client.master.after(100, lambda: self.client.connect_to_server())
+        self.destroy()
+
+    def _make_entry(self, caption: str, **options) -> ttk.Entry:
+        entry_container = ttk.Frame(self)
+        entry_container.pack(side=tk.TOP, fill=tk.X, padx=8, pady=8)
+
+        ttk.Label(entry_container, text=caption).pack(side=tk.LEFT)
+
+        entry = ttk.Entry(entry_container, **options)
+        entry.pack(side=tk.RIGHT)
+        return entry
+
+
 if __name__ == '__main__':
     logger = logging.getLogger("streaming-app.client")
     logger.setLevel(logging.DEBUG)
@@ -325,5 +407,5 @@ if __name__ == '__main__':
     root = tk.Tk()
 
     player = Client(root)
-    player.master.title = "Test Video Player"
+    player.master.title("Test Video Player")
     player.master.mainloop()
