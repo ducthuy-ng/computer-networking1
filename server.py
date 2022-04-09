@@ -1,9 +1,15 @@
 import configparser
+import datetime
+import io
 import logging
+import math
 import pathlib
 import socket
 
+from PIL import Image
+
 from server_worker import ServerWorker
+from video_stream import VideoStream
 
 
 class Server:
@@ -14,6 +20,9 @@ class Server:
         self.logger = logging.getLogger("streaming-app.server")
 
     def run(self):
+        # Generate video info files to reduce computation
+        self.generate_video_infos()
+
         self.rtsp_socket.bind((self.config_parser['Server']['hostname'],
                                self.config_parser.getint('Server', 'server_port')))
         self.rtsp_socket.listen(self.config_parser.getint('Socket', 'backlog'))
@@ -29,6 +38,32 @@ class Server:
                              pathlib.Path(self.config_parser['Server']['video_folder'])).start()
         except KeyboardInterrupt:
             pass
+
+    def generate_video_infos(self):
+        video_path: pathlib.Path = pathlib.Path(self.config_parser['Server']['video_folder'])
+        for video_file in video_path.iterdir():
+            # Skipping non-video files
+            if video_file.suffix.lower() != ".mjpeg":
+                continue
+
+            # Skip if info file has existed
+            info_file_path: pathlib.Path = video_file.with_suffix(".info")
+            if info_file_path.exists():
+                continue
+
+            info_file_path.touch()
+            with open(info_file_path, 'r+') as info_file:
+                info_file.write(f"filename={video_file.name}\n")
+
+                stream = VideoStream(video_file)
+                image = Image.open(io.BytesIO(stream.next_frame()))
+                info_file.write(f"resolution={image.size[0]}x{image.size[1]}\n")
+
+                while stream.next_frame():
+                    pass
+
+                duration = datetime.timedelta(seconds=math.ceil(stream.frame_nbr() * 0.05))
+                info_file.write(f"duration={duration}\n")
 
 
 if __name__ == "__main__":
