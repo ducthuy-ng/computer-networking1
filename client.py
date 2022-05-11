@@ -1,4 +1,5 @@
 import configparser
+import errno
 import io
 import logging
 import socket
@@ -12,13 +13,14 @@ from typing import Optional
 
 from PIL import Image, ImageTk
 
-from client_utils import ClientState, RtspResponse
+from client_utils import ClientState, RtspResponse, ServerDisconnected
 from rtp_packet import RtpPacket
 
 
 class ResourceHolder(tuple):
     play_icon: tk.PhotoImage
     pause_icon: tk.PhotoImage
+    reconnect_icon: tk.PhotoImage
     setting_icon: tk.PhotoImage
 
     splash_screen: Image
@@ -30,7 +32,7 @@ class Client:
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.logger = logging.getLogger("streaming-app.client")
 
-        self.connection_socket: socket.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connection_socket: Optional[socket.socket] = None
 
         # RTP packet configuration
         self.rtp_socket: Optional[socket.socket] = None
@@ -38,11 +40,13 @@ class Client:
 
         self.resource_holder = ResourceHolder()
 
+        self.label_txt = tk.StringVar()
+
         self.opening_filename: str = "movie.Mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
-        self.current_frame: int = 0
-        self.current_state: ClientState = ClientState.INIT
+        self.current_frame: int
+        self.current_state = ClientState.DISCONNECTED
 
         self._generate_layout()
         self.master.after(250, self.connect_to_server)
@@ -56,10 +60,12 @@ class Client:
         self.canvas_height: int = 0
         self.canvas_buffer = None
         self.video_buffer: Image = self.resource_holder.splash_screen
-        self.canvas_image_prev_id_queue: SimpleQueue = SimpleQueue()
+        self.canvas_image_queue: SimpleQueue = SimpleQueue()
 
     def setup_video(self, event=None):
-        if self.current_state != ClientState.INIT:
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+        elif self.current_state != ClientState.INIT:
             messagebox.showerror("Error", "Video has already been setup")
         else:
             self.logger.debug("Setting video up")
@@ -71,9 +77,10 @@ class Client:
                       f"CSeq: {self.sequence_number}\n" \
                       f"Transport: RTP/UDP; client_port= {self.rtp_socket.getsockname()[1]}\n"
             try:
-                response = RtspResponse(self.send_request_and_receive_response(payload))
-            except ConnectionError:
-                self.connect_to_server()
+                response = RtspResponse(self.send_request(payload))
+            except ServerDisconnected:
+                self.logger.info("Server has disconnected")
+                self.disconnect_from_server()
                 return
 
             if response.status_code == 200:
@@ -83,10 +90,12 @@ class Client:
                 messagebox.showerror("Error", "Video file not found")
             elif response.status_code == 500:
                 messagebox.showerror("Error", "Connection error, please try again later")
-                self._on_close()
+                self.disconnect_from_server()
 
     def play_video(self, event=None):
-        if self.current_state == ClientState.PLAYING:
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+        elif self.current_state == ClientState.PLAYING:
             messagebox.showwarning("Warning", "The video is already playing")
         elif self.current_state == ClientState.INIT:
             messagebox.showwarning("Warning", "No video to play, press SETUP to choose one")
@@ -98,10 +107,9 @@ class Client:
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             try:
-                response = RtspResponse(self.send_request_and_receive_response(payload))
-            except ConnectionError:
-                self.connect_to_server()
-                self.sequence_number -= 1
+                response = RtspResponse(self.send_request(payload))
+            except ServerDisconnected:
+                self.disconnect_from_server()
                 return
 
             if response.status_code == 200:
@@ -114,10 +122,12 @@ class Client:
                 messagebox.showerror("Error", "Video file not found")
             elif response.status_code == 500:
                 messagebox.showerror("Error", "Connection error, please try again later")
-                self._on_close()
+                self.disconnect_from_server()
 
     def pause_video(self, event=None):
-        if self.current_state == ClientState.INIT or self.current_state == ClientState.READY:
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+        elif self.current_state == ClientState.INIT or self.current_state == ClientState.READY:
             messagebox.showwarning("Warning", "The video is already paused")
         else:
             self.logger.debug("Pausing video")
@@ -127,10 +137,10 @@ class Client:
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
             try:
-                response = RtspResponse(self.send_request_and_receive_response(payload))
+                response = RtspResponse(self.send_request(payload))
             except ConnectionError:
                 self.stream_stop_flag.set()
-                self.connect_to_server()
+                self.disconnect_from_server()
                 self.sequence_number -= 1
                 return
 
@@ -143,10 +153,12 @@ class Client:
                 messagebox.showerror("Error", "Video file not found")
             elif response.status_code == 500:
                 messagebox.showerror("Error", "Connection error, please try again later")
-                self._on_close()
+                self.disconnect_from_server()
 
     def stop_video(self, event=None):
-        if self.current_state == ClientState.INIT:
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+        elif self.current_state == ClientState.INIT:
             messagebox.showwarning("Warning", "No video to tear down")
         else:
             self.logger.debug("Tearing video down")
@@ -155,12 +167,12 @@ class Client:
             payload = f"TEARDOWN {self.opening_filename} RTSP/1.0\n" \
                       f"CSeq: {self.sequence_number}\n" \
                       f"Session: {self.session_id}\n"
+
             try:
-                response = RtspResponse(self.send_request_and_receive_response(payload))
-            except ConnectionError:
+                response = RtspResponse(self.send_request(payload))
+            except ServerDisconnected:
+                self.disconnect_from_server()
                 self.stream_stop_flag.set()
-                self.connect_to_server()
-                self.sequence_number -= 1
                 return
 
             if response.status_code == 200:
@@ -187,13 +199,19 @@ class Client:
         title_container = tk.Frame(self.master)
         title_container.pack(side=tk.TOP, fill=tk.X)
 
-        title_label = tk.Label(title_container, text=self.opening_filename)
+        title_label = tk.Label(title_container, textvariable=self.label_txt)
         title_label.pack(side=tk.LEFT, fill=tk.X, expand=1)
 
         setting_btn = tk.Button(title_container, image=self.resource_holder.setting_icon,
                                 height=30, width=30,
                                 command=lambda: SettingWindow(self.master, self, self.config_parser))
         setting_btn.pack(side=tk.RIGHT, padx=8, pady=8)
+
+        # Reconnect button
+        reconnect_btn = tk.Button(title_container, image=self.resource_holder.reconnect_icon,
+                                  height=30, width=30,
+                                  command=self.reconnect_to_server)
+        reconnect_btn.pack(side=tk.RIGHT, padx=8, pady=8)
 
         self.video_canvas: tk.Canvas = tk.Canvas(self.master)
         self.video_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
@@ -224,6 +242,8 @@ class Client:
     def _load_resources(self):
         self.resource_holder.play_icon = tk.PhotoImage(file="res/outline_play_arrow_black_24dp.png")
         self.resource_holder.pause_icon = tk.PhotoImage(file="res/outline_pause_black_24dp.png")
+        self.resource_holder.reconnect_icon = \
+            tk.PhotoImage(file="res/outline_retry_black_24dp.png").subsample(2)
         self.resource_holder.setting_icon = \
             tk.PhotoImage(file="res/outline_settings_black_24dp.png").subsample(2)
 
@@ -234,7 +254,7 @@ class Client:
         if self.current_state == ClientState.PLAYING:
             self.stop_video()
 
-        self.connection_socket.close()
+        self.disconnect_from_server()
         if self.rtp_socket:
             self.rtp_socket.close()
 
@@ -248,39 +268,67 @@ class Client:
         self._update_image()
 
     def connect_to_server(self):
-        counter = 1
-        connection_option = self.config_parser['Connection']
-        # if self.connection_socket.
-        while counter < self.config_parser.getint('Connection', 'num_of_retry'):
+        def _connect_to_server():
+            self.label_txt.set("Connecting...")
+            counter = 1
+            connection_option = self.config_parser['Connection']
+            # if self.connection_socket.
+            while counter < self.config_parser.getint('Connection', 'num_of_retry'):
+                try:
+                    self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.connection_socket.settimeout(5)
+                    self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
+                    self.connection_socket.connect((connection_option['server_addr'],
+                                                    connection_option.getint('server_port')))
+                except OSError as err:
+                    if err.errno != errno.ECONNREFUSED:
+                        raise err
+                    counter += 1
+                    self.connection_socket = None
+                    time.sleep(self.config_parser.getint('Connection', 'delay_between_retry'))
+                else:
+                    self.current_state = ClientState.INIT
+                    self.label_txt.set("Connected")
+                    self.sequence_number = 0
+
+                    return
+
+            if counter == self.config_parser.getint('Connection', 'num_of_retry'):
+                self.disconnect_from_server()
+                messagebox.showerror("Error", "Can't connect to server, please retry later")
+
+        threading.Thread(target=_connect_to_server).start()
+
+    def disconnect_from_server(self):
+        if self.connection_socket:
             try:
-                self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
-                self.connection_socket.connect((connection_option['server_addr'],
-                                                connection_option.getint('server_port')))
-            except socket.error as error:
-                if error.errno == 56:
-                    break
+                self.connection_socket.shutdown(socket.SHUT_WR)
+                self.connection_socket.close()
+            except OSError as err:
+                if err.errno != errno.ENOTCONN:
+                    raise err
 
-                self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                counter += 1
-                time.sleep(self.config_parser.getint('Connection', 'delay_between_retry'))
-            else:
-                break
+            self.connection_socket = None
+        self.current_state = ClientState.DISCONNECTED
+        self.label_txt.set("Disconnected")
+        self.logger.debug("Disconnected from server")
 
-        if counter == self.config_parser.getint('Connection', 'num_of_retry'):
-            messagebox.showerror("Error", "Can't connect to server, please retry later")
-            self._on_close()
+    def reconnect_to_server(self):
+        self.disconnect_from_server()
+        self.connect_to_server()
 
-    def send_request_and_receive_response(self, request: str) -> str:
+    def send_request(self, request: str) -> str:
         try:
             self.connection_socket.sendall(request.encode("utf-8"))
+        except OSError as err:
+            if err.errno == errno.EPIPE:
+                raise ServerDisconnected()
+            else:
+                raise err
 
-            response: bytes = self.connection_socket.recv(self.config_parser.getint('Client', 'rtsp_buffer_size'))
-            if not response:
-                raise ConnectionError
-        except ConnectionError:
-            self.logger.error("Disconnected to Server")
-
-            response = b''
+        response: bytes = self.connection_socket.recv(self.config_parser.getint('Client', 'rtsp_buffer_size'))
+        if not response:
+            raise ServerDisconnected()
         return response.decode("utf-8")
 
     def setup_rtp(self):
@@ -312,7 +360,6 @@ class Client:
                 # Stop listening upon requesting PAUSE or TEARDOWN
                 if self.stream_stop_flag.is_set():
                     if self.current_state == ClientState.INIT:
-                        # self.rtp_socket.shutdown()
                         self.rtp_socket.close()
                     break
 
@@ -322,11 +369,11 @@ class Client:
                 Image.open(io.BytesIO(data)).resize((self.canvas_width, self.canvas_height))
 
         self.canvas_buffer = ImageTk.PhotoImage(self.video_buffer)
-        self.canvas_image_prev_id_queue.put(
+        self.canvas_image_queue.put(
             self.video_canvas.create_image(0, 0, anchor="nw", image=self.canvas_buffer))
 
-        if self.canvas_image_prev_id_queue.qsize() > 5:
-            self.video_canvas.delete(self.canvas_image_prev_id_queue.get())
+        if self.canvas_image_queue.qsize() > 5:
+            self.video_canvas.delete(self.canvas_image_queue.get())
 
 
 class SettingWindow(tk.Toplevel):
@@ -380,7 +427,7 @@ class SettingWindow(tk.Toplevel):
 
         if self.client.current_state != ClientState.INIT:
             self.client.stop_video()
-        self.client.master.after(100, lambda: self.client.connect_to_server())
+        self.client.master.after(100, self.client.reconnect_to_server)
         self.destroy()
 
     def _make_entry(self, caption: str, **options) -> ttk.Entry:

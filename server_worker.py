@@ -1,3 +1,4 @@
+import errno
 import logging
 import pathlib
 import random
@@ -172,8 +173,6 @@ class ServerWorker(threading.Thread):
         """Private method for sending RTP packets"""
         client_rtp_addr = (self.client_addr[0], self.rtp_port)
 
-        data = None
-
         try:
             self.logger.debug(f"Starting stream to client: {client_rtp_addr}")
             while True:
@@ -212,9 +211,20 @@ class ServerWorker(threading.Thread):
 
     def _cleanup(self):
         self.logger.info("Client has disconnected")
-        self.connection_socket.close()
+        try:
+            self.connection_socket.shutdown(socket.SHUT_RD)
+            self.connection_socket.close()
+        except OSError as err:
+            if err.errno != errno.ENOTCONN:
+                raise err
+
         if self.rtp_socket:
-            self.rtp_socket.close()
+            try:
+                self.rtp_socket.shutdown(socket.SHUT_WR)
+                self.rtp_socket.close()
+            except OSError as err:
+                if err.errno != errno.ENOTCONN:
+                    raise err
 
     def reply_rtsp(self, code: RespondType) -> None:
         """Send RTSP reply to the client."""
