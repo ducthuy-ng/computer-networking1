@@ -2,6 +2,12 @@ from enum import Enum
 from typing import List
 
 
+class ServerDisconnected(Exception):
+    def __init__(self):
+        self.msg = "Server has been disconnected"
+        super(Exception, self).__init__(self.msg)
+
+
 class RtspResponse:
     def __init__(self, data: str):
         if data == "":
@@ -27,6 +33,7 @@ class RtspResponse:
 
 
 class ClientState(Enum):
+    DISCONNECTED = -1
     INIT = 0
     READY = 1
     PLAYING = 2
