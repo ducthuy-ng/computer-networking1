@@ -9,7 +9,7 @@ import tkinter as tk
 from queue import SimpleQueue
 from tkinter import messagebox
 from tkinter import ttk
-from typing import Optional
+from typing import Optional, List
 
 from PIL import Image, ImageTk
 
@@ -22,6 +22,7 @@ class ResourceHolder(tuple):
     pause_icon: tk.PhotoImage
     reconnect_icon: tk.PhotoImage
     setting_icon: tk.PhotoImage
+    info_icon: tk.PhotoImage
 
     splash_screen: Image
 
@@ -190,6 +191,25 @@ class Client:
                 messagebox.showerror("Error", "Connection error, please try again later")
                 self._on_close()
 
+    def describe_video(self, event=None):
+        self.logger.debug("Sending DESCRIBE request")
+
+        self.sequence_number += 1
+        payload = f"DESCRIBE {self.opening_filename} RTSP/1.0\n" \
+                  f"CSeq: {self.sequence_number}\n"
+
+        try:
+            response = RtspResponse(self.send_request(payload))
+        except ConnectionError:
+            self.stream_stop_flag.set()
+            self.connect_to_server()
+            self.sequence_number -= 1
+            return
+
+        if response.status_code == 200:
+            self.logger.debug(response.get_other_line())
+            DescribeWindow(self.master, response.get_other_line()[:-1])
+
     def _generate_layout(self):
         self._load_resources()
 
@@ -198,6 +218,11 @@ class Client:
         # Title label
         title_container = tk.Frame(self.master)
         title_container.pack(side=tk.TOP, fill=tk.X)
+
+        title_label = tk.Label(title_container, textvariable=self.label_txt)
+        info_btn = tk.Button(title_container, image=self.resource_holder.info_icon,
+                             height=30, width=30, command=self.describe_video)
+        info_btn.pack(side=tk.LEFT, padx=8, pady=8)
 
         title_label = tk.Label(title_container, textvariable=self.label_txt)
         title_label.pack(side=tk.LEFT, fill=tk.X, expand=1)
@@ -246,6 +271,8 @@ class Client:
             tk.PhotoImage(file="res/outline_retry_black_24dp.png").subsample(2)
         self.resource_holder.setting_icon = \
             tk.PhotoImage(file="res/outline_settings_black_24dp.png").subsample(2)
+        self.resource_holder.info_icon = \
+            tk.PhotoImage(file="res/outline_info_black_24dp.png").subsample(2)
 
         self.resource_holder.splash_screen = Image.open("res/splash_screen.png")
 
@@ -439,6 +466,24 @@ class SettingWindow(tk.Toplevel):
         entry = ttk.Entry(entry_container, **options)
         entry.pack(side=tk.RIGHT)
         return entry
+
+
+class DescribeWindow(tk.Toplevel):
+    def __init__(self, parent: tk.Tk, fields_list: List[str]):
+        super().__init__(parent)
+
+        self.title("Info")
+
+        for field in fields_list:
+            attribute, value = field.split('=', maxsplit=1)
+            self.add_field(attribute.title() + ':', value)
+
+    def add_field(self, attribute: str, value: str):
+        field_container = ttk.Frame(self)
+        field_container.pack(side=tk.TOP, fill=tk.X, padx=8, pady=8)
+
+        ttk.Label(field_container, text=attribute).pack(side=tk.LEFT)
+        ttk.Label(field_container, text=value).pack(side=tk.LEFT)
 
 
 if __name__ == '__main__':
