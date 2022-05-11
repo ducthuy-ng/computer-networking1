@@ -34,6 +34,7 @@ class Client:
         self.logger = logging.getLogger("streaming-app.client")
 
         self.connection_socket: Optional[socket.socket] = None
+        self.stop_connect_event = threading.Event()
 
         # RTP packet configuration
         self.rtp_socket: Optional[socket.socket] = None
@@ -192,6 +193,10 @@ class Client:
                 self._on_close()
 
     def describe_video(self, event=None):
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+            return
+
         self.logger.debug("Sending DESCRIBE request")
 
         self.sequence_number += 1
@@ -219,7 +224,6 @@ class Client:
         title_container = tk.Frame(self.master)
         title_container.pack(side=tk.TOP, fill=tk.X)
 
-        title_label = tk.Label(title_container, textvariable=self.label_txt)
         info_btn = tk.Button(title_container, image=self.resource_holder.info_icon,
                              height=30, width=30, command=self.describe_video)
         info_btn.pack(side=tk.LEFT, padx=8, pady=8)
@@ -236,7 +240,7 @@ class Client:
         reconnect_btn = tk.Button(title_container, image=self.resource_holder.reconnect_icon,
                                   height=30, width=30,
                                   command=self.reconnect_to_server)
-        reconnect_btn.pack(side=tk.RIGHT, padx=8, pady=8)
+        reconnect_btn.pack(side=tk.RIGHT, padx=2, pady=2)
 
         self.video_canvas: tk.Canvas = tk.Canvas(self.master)
         self.video_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=1)
@@ -302,6 +306,8 @@ class Client:
             # if self.connection_socket.
             while counter < self.config_parser.getint('Connection', 'num_of_retry'):
                 try:
+                    if self.stop_connect_event.is_set():
+                        return
                     self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     self.connection_socket.settimeout(5)
                     self.logger.debug(f"Trying to connect to server. Attempt: {counter}")
@@ -324,9 +330,11 @@ class Client:
                 self.disconnect_from_server()
                 messagebox.showerror("Error", "Can't connect to server, please retry later")
 
+        self.stop_connect_event.clear()
         threading.Thread(target=_connect_to_server).start()
 
     def disconnect_from_server(self):
+        self.stop_connect_event.set()
         if self.connection_socket:
             try:
                 self.connection_socket.shutdown(socket.SHUT_WR)
