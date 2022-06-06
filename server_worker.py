@@ -30,6 +30,7 @@ class RequestType(Enum):
     PAUSE = 'PAUSE'
     TEARDOWN = 'TEARDOWN'
     DESCRIBE = 'DESCRIBE'
+    SWITCH = 'SWITCH'
 
 
 class ServerWorker(threading.Thread):
@@ -99,6 +100,8 @@ class ServerWorker(threading.Thread):
             self.handle_teardown_req(request)
         elif request_type == RequestType.DESCRIBE:
             self.handle_describe_req(request)
+        elif request_type == RequestType.SWITCH:
+            self.handle_switch_req(request)
 
         self.seq += 1
 
@@ -181,6 +184,17 @@ class ServerWorker(threading.Thread):
         response: str = f"RTSP/1.0 200 OK\nCSeq: {self.seq}\n"
         with open(file_name.with_suffix(".info"), 'r') as info_file:
             response += info_file.read()
+
+        self.connection_socket.sendall(response.encode("utf-8"))
+
+    def handle_switch_req(self, request: List[str]):
+        self.logger.debug("Processing SWITCH")
+
+        response: str = f"RTSP/1.0 200 OK\nCSeq: {self.seq}\n"
+
+        video_path = pathlib.Path(__file__).parent / "videos"
+        for video in video_path.glob("*.mjpeg"):
+            response += video.name + "\n"
 
         self.connection_socket.sendall(response.encode("utf-8"))
 
