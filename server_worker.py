@@ -193,8 +193,9 @@ class ServerWorker(threading.Thread):
         response: str = f"RTSP/1.0 200 OK\nCSeq: {self.seq}\n"
 
         video_path = pathlib.Path(__file__).parent / "videos"
-        for video in video_path.glob("*.mjpeg"):
-            response += video.name + "\n"
+        for file_path in video_path.iterdir():
+            if file_path.suffix.lower() == ".mjpeg":
+                response += file_path.name + "\n"
 
         self.connection_socket.sendall(response.encode("utf-8"))
 
