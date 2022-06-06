@@ -201,6 +201,10 @@ class Client:
             messagebox.showerror("Error", "Not connected to a server")
             return
 
+        if not self.opening_filename:
+            messagebox.showerror("Error", "No video chosen")
+            return
+        
         self.logger.debug("Sending DESCRIBE request")
 
         self.sequence_number += 1
@@ -548,6 +552,12 @@ class SwitchWindow(tk.Toplevel):
     def item_selected(self, event):
         selected_index = self.listbox.curselection()[0]
         self.parent.opening_filename = self.listbox.get(selected_index)
+        
+        if self.parent.current_state == ClientState.READY or \
+            self.parent.current_state == ClientState.PLAYING:
+            self.parent.stop_video()
+
+
         self.destroy()
 
 

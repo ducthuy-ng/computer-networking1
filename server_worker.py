@@ -192,8 +192,7 @@ class ServerWorker(threading.Thread):
 
         response: str = f"RTSP/1.0 200 OK\nCSeq: {self.seq}\n"
 
-        video_path = pathlib.Path(__file__).parent / "videos"
-        for file_path in video_path.iterdir():
+        for file_path in self.video_path.iterdir():
             if file_path.suffix.lower() == ".mjpeg":
                 response += file_path.name + "\n"
 
