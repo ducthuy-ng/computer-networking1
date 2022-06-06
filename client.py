@@ -45,6 +45,7 @@ class Client:
         self.label_txt = tk.StringVar()
 
         self.opening_filename: str = "movie.Mjpeg"
+        # self.opening_filename: str = "abc.mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
         self.current_frame: int
