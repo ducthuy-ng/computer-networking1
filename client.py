@@ -23,6 +23,7 @@ class ResourceHolder(tuple):
     reconnect_icon: tk.PhotoImage
     setting_icon: tk.PhotoImage
     info_icon: tk.PhotoImage
+    list_icon: tk.PhotoImage
 
     splash_screen: Image
 
@@ -44,7 +45,8 @@ class Client:
 
         self.label_txt = tk.StringVar()
 
-        self.opening_filename: str = "movie.Mjpeg"
+        self.opening_filename: Optional[str] = None
+        # self.opening_filename: str = "abc.mjpeg"
         self.session_id: int = 0
         self.sequence_number: int = 0
         self.current_frame: int
@@ -69,6 +71,8 @@ class Client:
             messagebox.showerror("Error", "Not connected to a server")
         elif self.current_state != ClientState.INIT:
             messagebox.showerror("Error", "Video has already been setup")
+        elif not self.opening_filename:
+            messagebox.showerror("Error", "No video chosen")
         else:
             self.logger.debug("Setting video up")
 
@@ -197,6 +201,10 @@ class Client:
             messagebox.showerror("Error", "Not connected to a server")
             return
 
+        if not self.opening_filename:
+            messagebox.showerror("Error", "No video chosen")
+            return
+
         self.logger.debug("Sending DESCRIBE request")
 
         self.sequence_number += 1
@@ -215,6 +223,29 @@ class Client:
             self.logger.debug(response.get_other_line())
             DescribeWindow(self.master, response.get_other_line()[:-1])
 
+    def switch_video(self):
+        if self.current_state == ClientState.DISCONNECTED:
+            messagebox.showerror("Error", "Not connected to a server")
+            return
+
+        self.logger.debug("Sending SWITCH request")
+
+        self.sequence_number += 1
+        payload = f"SWITCH RTSP/1.0\n" \
+                  f"CSeq: {self.sequence_number}\n"
+
+        try:
+            response = RtspResponse(self.send_request(payload))
+        except ConnectionError:
+            self.stream_stop_flag.set()
+            self.connect_to_server()
+            self.sequence_number -= 1
+            return
+
+        if response.status_code == 200:
+            self.logger.debug(response.get_other_line()[:-1])
+            SwitchWindow(self, response.get_other_line()[:-1])
+
     def _generate_layout(self):
         self._load_resources()
 
@@ -227,6 +258,10 @@ class Client:
         info_btn = tk.Button(title_container, image=self.resource_holder.info_icon,
                              height=30, width=30, command=self.describe_video)
         info_btn.pack(side=tk.LEFT, padx=8, pady=8)
+
+        list_btn = tk.Button(title_container, image=self.resource_holder.list_icon,
+                             height=30, width=30, command=self.switch_video)
+        list_btn.pack(side=tk.LEFT, padx=8, pady=8)
 
         title_label = tk.Label(title_container, textvariable=self.label_txt)
         title_label.pack(side=tk.LEFT, fill=tk.X, expand=1)
@@ -277,6 +312,8 @@ class Client:
             tk.PhotoImage(file="res/outline_settings_black_24dp.png").subsample(2)
         self.resource_holder.info_icon = \
             tk.PhotoImage(file="res/outline_info_black_24dp.png").subsample(2)
+        self.resource_holder.list_icon = \
+            tk.PhotoImage(file="res/list_black_24dp.png").subsample(2)
 
         self.resource_holder.splash_screen = Image.open("res/splash_screen.png")
 
@@ -346,6 +383,7 @@ class Client:
             self.connection_socket = None
         self.current_state = ClientState.DISCONNECTED
         self.label_txt.set("Disconnected")
+        self.opening_filename = None
         self.logger.debug("Disconnected from server")
 
     def reconnect_to_server(self):
@@ -492,6 +530,34 @@ class DescribeWindow(tk.Toplevel):
 
         ttk.Label(field_container, text=attribute).pack(side=tk.LEFT)
         ttk.Label(field_container, text=value).pack(side=tk.LEFT)
+
+
+class SwitchWindow(tk.Toplevel):
+    def __init__(self, parent: Client, videos_list: List[str]):
+        super().__init__(parent.master)
+        self.parent = parent
+
+        self.title("Switch")
+        self.geometry("180x100")
+
+        list_items = tk.StringVar(value=videos_list)
+        self.listbox = tk.Listbox(self, listvariable=list_items, height=5)
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.listbox.bind('<<ListboxSelect>>', self.item_selected)
+
+        scrollbar = ttk.Scrollbar(self, orient='vertical', command=self.listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.listbox['yscrollcommand'] = scrollbar.set
+
+    def item_selected(self, event):
+        selected_index = self.listbox.curselection()[0]
+        self.parent.opening_filename = self.listbox.get(selected_index)
+
+        if self.parent.current_state == ClientState.READY or \
+                self.parent.current_state == ClientState.PLAYING:
+            self.parent.stop_video()
+
+        self.destroy()
 
 
 if __name__ == '__main__':
